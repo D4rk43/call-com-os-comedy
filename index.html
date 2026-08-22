@@ -415,42 +415,38 @@ function addTile(id, stream, label){
   gridEl.appendChild(tile);
 }
 
-function getOrCreateGain(el){
-  if (el._gainNode) return el._gainNode;
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioContextClass();
-    const source = ctx.createMediaElementSource(el);
-    const gain = ctx.createGain();
-    source.connect(gain);
-    gain.connect(ctx.destination);
-    el._gainNode = gain;
-  } catch(e){
-    console.warn('Não consegui criar o controle avançado de volume:', e);
-    return null;
-  }
-  return el._gainNode;
-}
-
 function toggleVolumePopup(tile, id){
   const existing = tile.querySelector('.volume-popup');
   if (existing){ existing.remove(); return; }
   const el = mediaElements.get(id);
   if (!el) return;
-  const gain = getOrCreateGain(el);
-  const current = gain ? Math.round(gain.gain.value * 100) : Math.round((el.volume || 1) * 100);
+  const current = Math.round((el.volume === undefined ? 1 : el.volume) * 100);
   const popup = document.createElement('div');
   popup.className = 'volume-popup';
   popup.innerHTML =
     '<div class="volume-label">Volume: <span class="volume-value">' + current + '%</span></div>' +
-    '<input type="range" min="0" max="200" value="' + current + '" class="volume-range">';
-  popup.querySelector('.volume-range').oninput = (e) => {
+    '<input type="range" min="0" max="100" value="' + current + '" class="volume-range">';
+  const range = popup.querySelector('.volume-range');
+  const valueLabel = popup.querySelector('.volume-value');
+  range.oninput = (e) => {
     const v = Number(e.target.value);
-    if (gain) gain.gain.value = v / 100;
-    else el.volume = Math.min(v / 100, 1);
-    popup.querySelector('.volume-value').textContent = v + '%';
+    el.volume = v / 100;
+    el.muted = (v === 0);
+    valueLabel.textContent = v + '%';
   };
   tile.appendChild(popup);
+
+  setTimeout(() => {
+    const closeOnOutsideClick = (e) => {
+      if (!popup.contains(e.target)){
+        popup.remove();
+        document.removeEventListener('click', closeOnOutsideClick);
+        document.removeEventListener('contextmenu', closeOnOutsideClick);
+      }
+    };
+    document.addEventListener('click', closeOnOutsideClick);
+    document.addEventListener('contextmenu', closeOnOutsideClick);
+  }, 0);
 }
 
 function updateTileMeta(id, name, avatar){
@@ -513,7 +509,24 @@ function wireMediaCall(call){
 }
 
 function handleMemberList(list){
-  memberIds = new Set(list);
+  const newSet = new Set(list);
+  // fecha e remove quem não tá mais na lista (saiu ou fechou a aba)
+  for (const [id, call] of mediaConns){
+    if (!newSet.has(id)){
+      call.close();
+      mediaConns.delete(id);
+      removeTile(id);
+      profiles.delete(id);
+    }
+  }
+  for (const [id, call] of screenConns){
+    if (!newSet.has(id)){
+      call.close();
+      screenConns.delete(id);
+      removeTile('screen-' + id);
+    }
+  }
+  memberIds = newSet;
   for (const id of list){
     if (id === myId) continue;
     if (myId < id) callPeer(id); // regra pra evitar chamada duplicada
@@ -739,6 +752,13 @@ document.getElementById('noiseSuppressionToggle').onchange = async (e) => {
     }
   }
 };
+
+// avisa que saiu assim que a aba fecha, em vez de esperar o navegador detectar sozinho
+window.addEventListener('beforeunload', () => {
+  try {
+    if (peer && !peer.destroyed) peer.destroy();
+  } catch(e){}
+});
 </script>
 </body>
 </html>

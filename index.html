@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Call com os comedy</title>
+<title>Call com os Comedy</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <style>
   * { box-sizing: border-box; }
@@ -198,13 +198,28 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 30px; font-weight: 700; color: #c9cbe0;
   }
+
+  .volume-popup {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(15,17,21,0.95);
+    border: 1px solid #2c3140;
+    border-radius: 10px;
+    padding: 10px 12px;
+    width: 160px;
+    z-index: 10;
+  }
+  .volume-label { font-size: 11px; color: #8b8fa3; margin-bottom: 6px; }
+  .volume-value { color: #e8e8ec; font-weight: 600; }
+  .volume-range { width: 100%; }
 </style>
 </head>
 <body>
 
 <div class="top">
-  <h1>📞 Call dos Amigos</h1>
-  <input id="roomInput" placeholder="Código da sala (ex: turma-123)" />
+  <h1>📞 Call com os Comedy</h1>
+  <input id="roomInput" placeholder="Bomba (ex: turma-123)" />
   <input id="nameInput" placeholder="Seu nome" style="max-width:120px" />
   <button id="createBtn">Criar bomba</button>
   <button id="joinBtn" class="secondary">Entrar na bomba</button>
@@ -212,7 +227,7 @@
   <span id="status">desconectado</span>
 </div>
 
-<div class="hint" id="hint">Cria essa bomba, mande a bomba pros seus amigos, e fala pros comedy clicarem em "Entrar na sala" com essa mesma bomba.</div>
+<div class="hint" id="hint">Cria essa bomba, manda a bomba pros comedy, e fala pra eles clicarem em "Entrar na bomba" com essa mesma bomba.</div>
 
 <div class="grid" id="grid"></div>
 
@@ -225,7 +240,7 @@
 </div>
 
 <div id="chatPanel">
-  <div id="chatHeader">Chat da sala</div>
+  <div id="chatHeader">Chat da bomba</div>
   <div id="chatMessages"></div>
   <form id="chatForm">
     <input id="chatInput" placeholder="Escreva algo..." autocomplete="off" />
@@ -238,6 +253,11 @@
     <h2>Configurações</h2>
 
     <div class="field">
+      <label>Seu nome</label>
+      <input type="text" id="nameSettingsInput" placeholder="Seu nome" style="width:100%" />
+    </div>
+
+    <div class="field">
       <label>Sua foto (aparece quando a câmera tá desligada)</label>
       <div class="avatar-row">
         <div class="avatar-preview" id="avatarPreview">?</div>
@@ -246,7 +266,7 @@
     </div>
 
     <div class="field switch-row">
-      <label style="margin:0">Supressão de ruído no microfone</label>
+      <label style="margin:0">Abafa ronco</label>
       <label class="switch">
         <input type="checkbox" id="noiseSuppressionToggle" checked />
         <span class="slider-bg"></span>
@@ -269,6 +289,7 @@ let micOn = true, camOn = false, sharingScreen = false;
 let myName = 'Anônimo';
 let myAvatar = null;
 let noiseSuppressionOn = true;
+const profiles = new Map(); // id -> {name, avatar}
 
 const chatMessages = document.getElementById('chatMessages');
 const chatPanel = document.getElementById('chatPanel');
@@ -315,13 +336,26 @@ const controlsEl = document.getElementById('controls');
 
 function setStatus(t){ statusEl.textContent = t; }
 
+const mediaElements = new Map(); // id -> elemento de mídia (video ou audio) pra controlar volume
+
 function initialsFrom(name){
   return (name || '?').trim().charAt(0).toUpperCase();
 }
 
-function addTile(id, stream, label, opts){
-  opts = opts || {};
+function currentAvatarFor(id){
+  if (id === myId) return myAvatar;
+  const p = profiles.get(id);
+  return p ? p.avatar : null;
+}
+function currentNameFor(id, fallback){
+  if (id === myId) return myName;
+  const p = profiles.get(id);
+  return (p && p.name) || fallback;
+}
+
+function addTile(id, stream, label){
   removeTile(id);
+  label = currentNameFor(id, label);
   const tile = document.createElement('div');
   tile.className = 'tile';
   tile.id = 'tile-' + id;
@@ -342,10 +376,11 @@ function addTile(id, stream, label, opts){
       }
     };
     tile.appendChild(video);
+    mediaElements.set(id, video);
   } else {
     const wrap = document.createElement('div');
     wrap.className = 'avatar-tile';
-    const avatarUrl = id === myId ? myAvatar : (opts.avatar || null);
+    const avatarUrl = currentAvatarFor(id);
     if (avatarUrl){
       const img = document.createElement('img');
       img.src = avatarUrl;
@@ -363,6 +398,7 @@ function addTile(id, stream, label, opts){
       audioEl.srcObject = stream;
       if (id === myId) audioEl.muted = true;
       wrap.appendChild(audioEl);
+      mediaElements.set(id, audioEl);
     }
     tile.appendChild(wrap);
   }
@@ -371,11 +407,81 @@ function addTile(id, stream, label, opts){
   lab.className = 'label';
   lab.textContent = label;
   tile.appendChild(lab);
+
+  if (id !== myId && !id.startsWith('screen-')){
+    tile.oncontextmenu = (e) => { e.preventDefault(); toggleVolumePopup(tile, id); };
+  }
+
   gridEl.appendChild(tile);
 }
+
+function getOrCreateGain(el){
+  if (el._gainNode) return el._gainNode;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioContextClass();
+    const source = ctx.createMediaElementSource(el);
+    const gain = ctx.createGain();
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    el._gainNode = gain;
+  } catch(e){
+    console.warn('Não consegui criar o controle avançado de volume:', e);
+    return null;
+  }
+  return el._gainNode;
+}
+
+function toggleVolumePopup(tile, id){
+  const existing = tile.querySelector('.volume-popup');
+  if (existing){ existing.remove(); return; }
+  const el = mediaElements.get(id);
+  if (!el) return;
+  const gain = getOrCreateGain(el);
+  const current = gain ? Math.round(gain.gain.value * 100) : Math.round((el.volume || 1) * 100);
+  const popup = document.createElement('div');
+  popup.className = 'volume-popup';
+  popup.innerHTML =
+    '<div class="volume-label">Volume: <span class="volume-value">' + current + '%</span></div>' +
+    '<input type="range" min="0" max="200" value="' + current + '" class="volume-range">';
+  popup.querySelector('.volume-range').oninput = (e) => {
+    const v = Number(e.target.value);
+    if (gain) gain.gain.value = v / 100;
+    else el.volume = Math.min(v / 100, 1);
+    popup.querySelector('.volume-value').textContent = v + '%';
+  };
+  tile.appendChild(popup);
+}
+
+function updateTileMeta(id, name, avatar){
+  if (id !== myId) profiles.set(id, { name, avatar });
+  const tile = document.getElementById('tile-' + id);
+  if (!tile) return;
+  const lab = tile.querySelector('.label');
+  if (lab) lab.textContent = name;
+  // se o quadrinho tá mostrando avatar/iniciais (sem vídeo), atualiza a imagem
+  const wrap = tile.querySelector('.avatar-tile');
+  if (wrap){
+    const existingImg = wrap.querySelector('img');
+    const existingInitials = wrap.querySelector('.initials');
+    if (avatar){
+      if (existingImg) existingImg.src = avatar;
+      else {
+        if (existingInitials) existingInitials.remove();
+        const img = document.createElement('img');
+        img.src = avatar;
+        wrap.insertBefore(img, wrap.firstChild);
+      }
+    } else if (existingInitials){
+      existingInitials.textContent = initialsFrom(name);
+    }
+  }
+}
+
 function removeTile(id){
   const t = document.getElementById('tile-' + id);
   if (t) t.remove();
+  mediaElements.delete(id);
 }
 
 async function getLocalStream(){
@@ -388,7 +494,7 @@ async function getLocalStream(){
     },
     video: false
   });
-  addTile(myId, localStream, 'Você');
+  addTile(myId, localStream, myName);
   return localStream;
 }
 
@@ -400,7 +506,7 @@ function callPeer(id){
 function wireMediaCall(call){
   mediaConns.set(call.peer, call);
   call.on('stream', remoteStream => {
-    addTile(call.peer, remoteStream, 'Amigo');
+    addTile(call.peer, remoteStream, 'Comedy');
   });
   call.on('close', () => { mediaConns.delete(call.peer); removeTile(call.peer); });
   call.on('error', () => { mediaConns.delete(call.peer); });
@@ -430,6 +536,7 @@ async function startPeer(asHost){
 
   peer.on('open', id => {
     myId = id;
+    profiles.set(myId, { name: myName, avatar: myAvatar });
     setStatus('conectado (' + (isHost ? 'host' : 'convidado') + ')');
     controlsEl.style.display = 'flex';
     hintEl.style.display = 'none';
@@ -437,9 +544,11 @@ async function startPeer(asHost){
     if (!isHost){
       const conn = peer.connect(roomCode, { reliable: true });
       dataConns.set(roomCode, conn);
+      conn.on('open', () => conn.send(myProfileMsg()));
       conn.on('data', data => {
         if (data.type === 'peer-list') handleMemberList(data.list);
         else if (data.type === 'chat') displayChat(data);
+        else if (data.type === 'profile') updateTileMeta(data.from, data.name, data.avatar);
       });
       conn.on('close', () => setStatus('host desconectou'));
     }
@@ -448,7 +557,13 @@ async function startPeer(asHost){
   peer.on('connection', conn => {
     // só o host recebe conexões de dados de outros
     dataConns.set(conn.peer, conn);
-    conn.on('open', () => broadcastMemberList());
+    conn.on('open', () => {
+      broadcastMemberList();
+      // manda pro recém-chegado os perfis que já conhecemos
+      for (const [id, p] of profiles){
+        if (id !== conn.peer) conn.send({ type: 'profile', from: id, name: p.name, avatar: p.avatar });
+      }
+    });
     conn.on('close', () => {
       dataConns.delete(conn.peer);
       broadcastMemberList();
@@ -456,6 +571,11 @@ async function startPeer(asHost){
     conn.on('data', data => {
       if (data.type === 'chat'){
         displayChat(data);
+        for (const [id, other] of dataConns){
+          if (id !== conn.peer && other.open) other.send(data);
+        }
+      } else if (data.type === 'profile'){
+        updateTileMeta(data.from, data.name, data.avatar);
         for (const [id, other] of dataConns){
           if (id !== conn.peer && other.open) other.send(data);
         }
@@ -480,9 +600,25 @@ async function startPeer(asHost){
   });
 }
 
+function myProfileMsg(){
+  return { type: 'profile', from: myId, name: myName, avatar: myAvatar };
+}
+
+function broadcastProfile(){
+  profiles.set(myId, { name: myName, avatar: myAvatar });
+  updateTileMeta(myId, myName, myAvatar);
+  const msg = myProfileMsg();
+  if (isHost){
+    for (const conn of dataConns.values()) if (conn.open) conn.send(msg);
+  } else {
+    const conn = dataConns.get(roomCode);
+    if (conn && conn.open) conn.send(msg);
+  }
+}
+
 document.getElementById('createBtn').onclick = () => {
   const code = document.getElementById('roomInput').value.trim();
-  if (!code) return alert('Digite um código pra sua sala.');
+  if (!code) return alert('Digite uma bomba pra sua call.');
   myName = document.getElementById('nameInput').value.trim() || 'Anônimo';
   roomCode = code;
   startPeer(true);
@@ -490,7 +626,7 @@ document.getElementById('createBtn').onclick = () => {
 
 document.getElementById('joinBtn').onclick = () => {
   const code = document.getElementById('roomInput').value.trim();
-  if (!code) return alert('Digite o código da sala pra entrar.');
+  if (!code) return alert('Digite a bomba pra entrar.');
   myName = document.getElementById('nameInput').value.trim() || 'Anônimo';
   roomCode = code;
   startPeer(false);
@@ -511,13 +647,13 @@ document.getElementById('camBtn').onclick = async () => {
       localStream.addTrack(track);
       // renegocia stream de vídeo com todo mundo
       for (const id of mediaConns.keys()) callUpdateTrack(id, track);
-      addTile(myId, localStream, 'Você');
+      addTile(myId, localStream, myName);
       camOn = true;
     } catch(e){ alert('Não consegui acessar sua câmera.'); }
   } else {
     localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
     camOn = false;
-    addTile(myId, localStream, 'Você');
+    addTile(myId, localStream, myName);
   }
   document.getElementById('camBtn').classList.toggle('active', camOn);
 };
@@ -566,9 +702,19 @@ document.getElementById('leaveBtn').onclick = () => {
 
 // --- Configurações ---
 const settingsOverlay = document.getElementById('settingsOverlay');
-document.getElementById('settingsBtn').onclick = () => settingsOverlay.classList.add('open');
+document.getElementById('settingsBtn').onclick = () => {
+  document.getElementById('nameSettingsInput').value = myName;
+  settingsOverlay.classList.add('open');
+};
 document.getElementById('closeSettingsBtn').onclick = () => settingsOverlay.classList.remove('open');
 settingsOverlay.onclick = (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('open'); };
+
+document.getElementById('nameSettingsInput').onchange = (e) => {
+  const newName = e.target.value.trim();
+  if (!newName) return;
+  myName = newName;
+  if (peer && !peer.destroyed) broadcastProfile();
+};
 
 document.getElementById('avatarInput').onchange = (e) => {
   const file = e.target.files[0];
@@ -577,7 +723,7 @@ document.getElementById('avatarInput').onchange = (e) => {
   reader.onload = () => {
     myAvatar = reader.result;
     document.getElementById('avatarPreview').innerHTML = '<img src="' + myAvatar + '">';
-    if (!camOn && localStream) addTile(myId, localStream, 'Você');
+    if (peer && !peer.destroyed) broadcastProfile();
   };
   reader.readAsDataURL(file);
 };

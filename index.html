@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Call dos Amigos</title>
+<title>Call com os comedy</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <style>
   * { box-sizing: border-box; }
@@ -144,6 +144,60 @@
     flex: 1;
     width: 100%;
   }
+
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #171a21;
+    border: 1px solid #262b36;
+    border-radius: 14px;
+    padding: 22px;
+    width: 320px;
+    max-width: 90vw;
+  }
+  .modal h2 { font-size: 15px; margin: 0 0 16px; color: #e8e8ec; }
+  .field { margin-bottom: 18px; }
+  .field label { font-size: 13px; color: #8b8fa3; display: block; margin-bottom: 8px; }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; }
+  .switch { position: relative; width: 42px; height: 24px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider-bg {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #2c3140; border-radius: 24px; transition: 0.2s;
+  }
+  .slider-bg:before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.2s;
+  }
+  input:checked + .slider-bg { background: #5b6cff; }
+  input:checked + .slider-bg:before { transform: translateX(18px); }
+  .avatar-row { display: flex; align-items: center; gap: 12px; }
+  .avatar-preview {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: #2c3140; display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 700; color: #8b8fa3; overflow: hidden; flex-shrink: 0;
+  }
+  .avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
+  .modal .close-btn { width: 100%; margin-top: 4px; }
+
+  .avatar-tile {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    background: #20242e;
+  }
+  .avatar-tile img { width: 90px; height: 90px; border-radius: 50%; object-fit: cover; }
+  .avatar-tile .initials {
+    width: 90px; height: 90px; border-radius: 50%; background: #2c3140;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; font-weight: 700; color: #c9cbe0;
+  }
 </style>
 </head>
 <body>
@@ -152,12 +206,13 @@
   <h1>📞 Call dos Amigos</h1>
   <input id="roomInput" placeholder="Código da sala (ex: turma-123)" />
   <input id="nameInput" placeholder="Seu nome" style="max-width:120px" />
-  <button id="createBtn">Criar sala</button>
-  <button id="joinBtn" class="secondary">Entrar na sala</button>
+  <button id="createBtn">Criar bomba</button>
+  <button id="joinBtn" class="secondary">Entrar na bomba</button>
+  <button id="settingsBtn" class="secondary">⚙️</button>
   <span id="status">desconectado</span>
 </div>
 
-<div class="hint" id="hint">Crie uma sala, mande o código pros seus amigos, e peça pra eles clicarem em "Entrar na sala" com esse mesmo código.</div>
+<div class="hint" id="hint">Cria essa bomba, mande a bomba pros seus amigos, e fala pros comedy clicarem em "Entrar na sala" com essa mesma bomba.</div>
 
 <div class="grid" id="grid"></div>
 
@@ -178,6 +233,30 @@
   </form>
 </div>
 
+<div class="modal-overlay" id="settingsOverlay">
+  <div class="modal">
+    <h2>Configurações</h2>
+
+    <div class="field">
+      <label>Sua foto (aparece quando a câmera tá desligada)</label>
+      <div class="avatar-row">
+        <div class="avatar-preview" id="avatarPreview">?</div>
+        <input type="file" id="avatarInput" accept="image/*" />
+      </div>
+    </div>
+
+    <div class="field switch-row">
+      <label style="margin:0">Supressão de ruído no microfone</label>
+      <label class="switch">
+        <input type="checkbox" id="noiseSuppressionToggle" checked />
+        <span class="slider-bg"></span>
+      </label>
+    </div>
+
+    <button class="close-btn secondary" id="closeSettingsBtn">Fechar</button>
+  </div>
+</div>
+
 <script>
 let peer, myId, roomCode, isHost = false;
 let localStream = null;
@@ -188,6 +267,8 @@ const screenConns = new Map(); // id -> MediaConnection (mesh, screen share)
 let memberIds = new Set();
 let micOn = true, camOn = false, sharingScreen = false;
 let myName = 'Anônimo';
+let myAvatar = null;
+let noiseSuppressionOn = true;
 
 const chatMessages = document.getElementById('chatMessages');
 const chatPanel = document.getElementById('chatPanel');
@@ -234,27 +315,61 @@ const controlsEl = document.getElementById('controls');
 
 function setStatus(t){ statusEl.textContent = t; }
 
-function addTile(id, stream, label){
+function initialsFrom(name){
+  return (name || '?').trim().charAt(0).toUpperCase();
+}
+
+function addTile(id, stream, label, opts){
+  opts = opts || {};
   removeTile(id);
   const tile = document.createElement('div');
   tile.className = 'tile';
   tile.id = 'tile-' + id;
-  const video = document.createElement('video');
-  video.autoplay = true;
-  video.playsInline = true;
-  if (id === myId) video.muted = true;
-  video.srcObject = stream;
-  video.onclick = () => {
-    if (document.fullscreenElement === video) {
-      document.exitFullscreen();
+
+  const hasVideo = stream && stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
+
+  if (hasVideo){
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    if (id === myId) video.muted = true;
+    video.srcObject = stream;
+    video.onclick = () => {
+      if (document.fullscreenElement === video) {
+        document.exitFullscreen();
+      } else {
+        (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
+      }
+    };
+    tile.appendChild(video);
+  } else {
+    const wrap = document.createElement('div');
+    wrap.className = 'avatar-tile';
+    const avatarUrl = id === myId ? myAvatar : (opts.avatar || null);
+    if (avatarUrl){
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      wrap.appendChild(img);
     } else {
-      (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
+      const initials = document.createElement('div');
+      initials.className = 'initials';
+      initials.textContent = initialsFrom(label);
+      wrap.appendChild(initials);
     }
-  };
+    // ainda tocamos o áudio, mesmo sem exibir vídeo
+    if (stream){
+      const audioEl = document.createElement('audio');
+      audioEl.autoplay = true;
+      audioEl.srcObject = stream;
+      if (id === myId) audioEl.muted = true;
+      wrap.appendChild(audioEl);
+    }
+    tile.appendChild(wrap);
+  }
+
   const lab = document.createElement('div');
   lab.className = 'label';
   lab.textContent = label;
-  tile.appendChild(video);
   tile.appendChild(lab);
   gridEl.appendChild(tile);
 }
@@ -265,7 +380,14 @@ function removeTile(id){
 
 async function getLocalStream(){
   if (localStream) return localStream;
-  localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  localStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      noiseSuppression: noiseSuppressionOn,
+      echoCancellation: true,
+      autoGainControl: true
+    },
+    video: false
+  });
   addTile(myId, localStream, 'Você');
   return localStream;
 }
@@ -440,6 +562,36 @@ function stopScreenShare(){
 document.getElementById('leaveBtn').onclick = () => {
   if (peer) peer.destroy();
   location.reload();
+};
+
+// --- Configurações ---
+const settingsOverlay = document.getElementById('settingsOverlay');
+document.getElementById('settingsBtn').onclick = () => settingsOverlay.classList.add('open');
+document.getElementById('closeSettingsBtn').onclick = () => settingsOverlay.classList.remove('open');
+settingsOverlay.onclick = (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('open'); };
+
+document.getElementById('avatarInput').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    myAvatar = reader.result;
+    document.getElementById('avatarPreview').innerHTML = '<img src="' + myAvatar + '">';
+    if (!camOn && localStream) addTile(myId, localStream, 'Você');
+  };
+  reader.readAsDataURL(file);
+};
+
+document.getElementById('noiseSuppressionToggle').onchange = async (e) => {
+  noiseSuppressionOn = e.target.checked;
+  if (localStream){
+    const track = localStream.getAudioTracks()[0];
+    if (track){
+      try {
+        await track.applyConstraints({ noiseSuppression: noiseSuppressionOn, echoCancellation: true, autoGainControl: true });
+      } catch(err){ console.warn('Não deu pra ajustar a supressão de ruído em tempo real:', err); }
+    }
+  }
 };
 </script>
 </body>

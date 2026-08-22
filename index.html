@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Call dos Amigos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e8e8ec;
+    min-height: 100vh;
+  }
+  .top {
+    padding: 14px 20px;
+    background: #171a21;
+    border-bottom: 1px solid #262b36;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .top h1 { font-size: 16px; margin: 0; color: #8b8fa3; font-weight: 600; }
+  input {
+    background: #0f1115;
+    border: 1px solid #2c3140;
+    color: #e8e8ec;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    outline: none;
+  }
+  input:focus { border-color: #5b6cff; }
+  button {
+    background: #5b6cff;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: 0.15s;
+  }
+  button:hover { background: #4a5be0; }
+  button.secondary { background: #2c3140; }
+  button.secondary:hover { background: #383e52; }
+  button.danger { background: #e0475b; }
+  button.danger:hover { background: #c93b4e; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.active { background: #2ecc71; }
+
+  #status { font-size: 13px; color: #8b8fa3; margin-left: auto; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+    padding: 20px;
+  }
+  .tile {
+    background: #171a21;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid #262b36;
+    aspect-ratio: 16/9;
+  }
+  .tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+    display: block;
+  }
+  .tile .label {
+    position: absolute;
+    bottom: 8px;
+    left: 10px;
+    background: rgba(0,0,0,0.55);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .controls {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    background: #171a21;
+    padding: 10px;
+    border-radius: 16px;
+    border: 1px solid #262b36;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .hint { font-size: 12px; color: #6a6f80; padding: 0 20px 8px; }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>📞 Call dos Amigos</h1>
+  <input id="roomInput" placeholder="Código da sala (ex: turma-123)" />
+  <button id="createBtn">Criar sala</button>
+  <button id="joinBtn" class="secondary">Entrar na sala</button>
+  <span id="status">desconectado</span>
+</div>
+
+<div class="hint" id="hint">Crie uma sala, mande o código pros seus amigos, e peça pra eles clicarem em "Entrar na sala" com esse mesmo código.</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="controls" id="controls" style="display:none">
+  <button id="micBtn">🎤 Mic</button>
+  <button id="camBtn">📷 Câmera</button>
+  <button id="screenBtn">🖥️ Compartilhar tela</button>
+  <button id="leaveBtn" class="danger">Sair</button>
+</div>
+
+<script>
+let peer, myId, roomCode, isHost = false;
+let localStream = null;
+let screenStream = null;
+const dataConns = new Map();   // id -> DataConnection (host <-> clients)
+const mediaConns = new Map();  // id -> MediaConnection (mesh, camera/mic)
+const screenConns = new Map(); // id -> MediaConnection (mesh, screen share)
+let memberIds = new Set();
+let micOn = true, camOn = false, sharingScreen = false;
+
+const statusEl = document.getElementById('status');
+const gridEl = document.getElementById('grid');
+const hintEl = document.getElementById('hint');
+const controlsEl = document.getElementById('controls');
+
+function setStatus(t){ statusEl.textContent = t; }
+
+function addTile(id, stream, label){
+  removeTile(id);
+  const tile = document.createElement('div');
+  tile.className = 'tile';
+  tile.id = 'tile-' + id;
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  if (id === myId) video.muted = true;
+  video.srcObject = stream;
+  const lab = document.createElement('div');
+  lab.className = 'label';
+  lab.textContent = label;
+  tile.appendChild(video);
+  tile.appendChild(lab);
+  gridEl.appendChild(tile);
+}
+function removeTile(id){
+  const t = document.getElementById('tile-' + id);
+  if (t) t.remove();
+}
+
+async function getLocalStream(){
+  if (localStream) return localStream;
+  localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  addTile(myId, localStream, 'Você');
+  return localStream;
+}
+
+function callPeer(id){
+  if (mediaConns.has(id) || !localStream) return;
+  const call = peer.call(id, localStream);
+  wireMediaCall(call);
+}
+function wireMediaCall(call){
+  mediaConns.set(call.peer, call);
+  call.on('stream', remoteStream => {
+    addTile(call.peer, remoteStream, 'Amigo');
+  });
+  call.on('close', () => { mediaConns.delete(call.peer); removeTile(call.peer); });
+  call.on('error', () => { mediaConns.delete(call.peer); });
+}
+
+function handleMemberList(list){
+  memberIds = new Set(list);
+  for (const id of list){
+    if (id === myId) continue;
+    if (myId < id) callPeer(id); // regra pra evitar chamada duplicada
+  }
+}
+
+function broadcastMemberList(){
+  const list = [myId, ...dataConns.keys()];
+  const msg = { type: 'peer-list', list };
+  for (const conn of dataConns.values()){
+    if (conn.open) conn.send(msg);
+  }
+  handleMemberList(list);
+}
+
+async function startPeer(asHost){
+  await getLocalStream();
+  isHost = asHost;
+  peer = asHost ? new Peer(roomCode) : new Peer();
+
+  peer.on('open', id => {
+    myId = id;
+    setStatus('conectado (' + (isHost ? 'host' : 'convidado') + ')');
+    controlsEl.style.display = 'flex';
+    hintEl.style.display = 'none';
+
+    if (!isHost){
+      const conn = peer.connect(roomCode, { reliable: true });
+      dataConns.set(roomCode, conn);
+      conn.on('data', data => {
+        if (data.type === 'peer-list') handleMemberList(data.list);
+      });
+      conn.on('close', () => setStatus('host desconectou'));
+    }
+  });
+
+  peer.on('connection', conn => {
+    // só o host recebe conexões de dados de outros
+    dataConns.set(conn.peer, conn);
+    conn.on('open', () => broadcastMemberList());
+    conn.on('close', () => {
+      dataConns.delete(conn.peer);
+      broadcastMemberList();
+    });
+    conn.on('data', () => {});
+  });
+
+  peer.on('call', call => {
+    call.answer(localStream);
+    if (call.metadata && call.metadata.kind === 'screen'){
+      screenConns.set(call.peer, call);
+      call.on('stream', remoteStream => addTile('screen-' + call.peer, remoteStream, 'Tela de um amigo'));
+      call.on('close', () => removeTile('screen-' + call.peer));
+    } else {
+      wireMediaCall(call);
+    }
+  });
+
+  peer.on('error', err => {
+    console.error(err);
+    setStatus('erro: ' + err.type);
+  });
+}
+
+document.getElementById('createBtn').onclick = () => {
+  const code = document.getElementById('roomInput').value.trim();
+  if (!code) return alert('Digite um código pra sua sala.');
+  roomCode = code;
+  startPeer(true);
+};
+
+document.getElementById('joinBtn').onclick = () => {
+  const code = document.getElementById('roomInput').value.trim();
+  if (!code) return alert('Digite o código da sala pra entrar.');
+  roomCode = code;
+  startPeer(false);
+};
+
+document.getElementById('micBtn').onclick = () => {
+  if (!localStream) return;
+  micOn = !micOn;
+  localStream.getAudioTracks().forEach(t => t.enabled = micOn);
+  document.getElementById('micBtn').classList.toggle('active', micOn);
+};
+
+document.getElementById('camBtn').onclick = async () => {
+  if (!camOn){
+    try {
+      const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const track = camStream.getVideoTracks()[0];
+      localStream.addTrack(track);
+      // renegocia stream de vídeo com todo mundo
+      for (const id of mediaConns.keys()) callUpdateTrack(id, track);
+      addTile(myId, localStream, 'Você');
+      camOn = true;
+    } catch(e){ alert('Não consegui acessar sua câmera.'); }
+  } else {
+    localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
+    camOn = false;
+    addTile(myId, localStream, 'Você');
+  }
+  document.getElementById('camBtn').classList.toggle('active', camOn);
+};
+
+function callUpdateTrack(id, track){
+  const call = mediaConns.get(id);
+  if (!call || !call.peerConnection) return;
+  const sender = call.peerConnection.getSenders().find(s => s.track && s.track.kind === track.kind);
+  if (sender) sender.replaceTrack(track);
+}
+
+document.getElementById('screenBtn').onclick = async () => {
+  if (!sharingScreen){
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    } catch(e){ return; }
+    addTile('screen-' + myId, screenStream, 'Sua tela');
+    for (const id of memberIds){
+      if (id === myId) continue;
+      const call = peer.call(id, screenStream, { metadata: { kind: 'screen' } });
+      screenConns.set(id, call);
+    }
+    screenStream.getVideoTracks()[0].onended = () => stopScreenShare();
+    sharingScreen = true;
+    document.getElementById('screenBtn').classList.add('active');
+  } else {
+    stopScreenShare();
+  }
+};
+
+function stopScreenShare(){
+  if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+  removeTile('screen-' + myId);
+  for (const call of screenConns.values()) call.close();
+  screenConns.clear();
+  sharingScreen = false;
+  document.getElementById('screenBtn').classList.remove('active');
+}
+
+// recebe chamadas de tela de outros também (mesmo listener de peer.on('call'),
+// distinguimos pelo fato de já termos uma media call daquele id ou não)
+document.getElementById('leaveBtn').onclick = () => {
+  if (peer) peer.destroy();
+  location.reload();
+};
+</script>
+</body>
+</html>

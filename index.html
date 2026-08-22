@@ -75,7 +75,9 @@
     object-fit: cover;
     background: #000;
     display: block;
+    cursor: pointer;
   }
+  .tile video:hover { outline: 2px solid #5b6cff; outline-offset: -2px; }
   .tile .label {
     position: absolute;
     bottom: 8px;
@@ -149,6 +151,13 @@ function addTile(id, stream, label){
   video.playsInline = true;
   if (id === myId) video.muted = true;
   video.srcObject = stream;
+  video.onclick = () => {
+    if (document.fullscreenElement === video) {
+      document.exitFullscreen();
+    } else {
+      (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
+    }
+  };
   const lab = document.createElement('div');
   lab.className = 'label';
   lab.textContent = label;
